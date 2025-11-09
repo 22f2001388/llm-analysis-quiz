@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+bun.lockb
+.DS_Store
+coverage
+logs
+*.log
+docs/*
