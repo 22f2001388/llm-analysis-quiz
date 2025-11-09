@@ -5,10 +5,10 @@ import { safeEqualsSecret } from "../config/env.js";
 const Body = z.object({
   email: z.string().email(),
   secret: z.string().min(1),
-  url: z.string().regex(/^https?:\/\/.+/),
+  url: z.string().regex(/^https?:\/\/.+/)
 }).strict();
 
-export async function registerRoutes(app: FastifyInstance) {
+export function registerRoutes(app: FastifyInstance) {
   app.post("/solve", {
     schema: {
       body: {

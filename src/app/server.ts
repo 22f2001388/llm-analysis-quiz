@@ -10,7 +10,7 @@ export function buildServer() {
   const app = Fastify({ logger: loggerOptions });
   app.register(requestId);
   app.register(errorHandler);
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", () => ({ ok: true }));
   app.register(registerRoutes);
   return app;
 }

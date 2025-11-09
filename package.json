@@ -4,11 +4,12 @@
   "description": "A project to analyze and solve quizzes using LLMs.",
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/app/server.ts",
+    "dev": "bun --hot src/app/server.ts | jq .",
     "build": "tsc -p tsconfig.json",
-    "start": "bun dist/app/server.js",
-    "lint": "eslint . --ext .ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "start": "bun run build && bun dist/app/server.js | jq .",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "bun run lint && bun run typecheck"
   },
   "author": "22f2001388",
   "license": "MIT",
