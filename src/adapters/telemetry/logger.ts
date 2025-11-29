@@ -1,14 +1,22 @@
 import pino, { LoggerOptions, LogFn } from "pino";
 
 export const loggerOptions: LoggerOptions = {
-  level: process.env.NODE_ENV === "production" ? "info" : "debug",
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === "production" ? "info" : "debug"),
   base: null,
   timestamp: () => {
-    const ist = new Date().toLocaleString("en-IN", {
+    const now = new Date();
+    const ist = now.toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
-      hour12: false
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
     });
-    return `"time":"${ist}"`; // no leading comma
+    const ms = String(now.getMilliseconds()).padStart(3, '0');
+    return `"time":"${ist}.${ms}"`;
   },
   formatters: {
     level() {
@@ -41,4 +49,17 @@ export const loggerOptions: LoggerOptions = {
   }
 };
 
-export const logger = pino(loggerOptions);
+const transport = process.env.NODE_ENV !== 'production' ? {
+  target: 'pino-pretty',
+  options: {
+    colorize: false,
+    translateTime: false,
+    ignore: 'pid,hostname',
+    singleLine: false
+  }
+} : undefined;
+
+export const logger = pino({
+  ...loggerOptions,
+  transport
+});

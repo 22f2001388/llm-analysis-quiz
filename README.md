@@ -29,6 +29,7 @@ This project is a web service that uses a large language model to automatically 
 
 *   `SECRET_KEY`: A secret key for signing JWTs.
 *   `LLM_API_KEY`: Your API key for the language model.
+*   `LOG_LEVEL`: (Optional) Logging level - `debug`, `info`, `warn`, `error`. Defaults to `debug` in development, `info` in production.
 *   `BROWSER_PATH`: (Optional) The path to a local Chromium executable.
 
 ## Available Scripts

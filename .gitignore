@@ -5,5 +5,4 @@ bun.lockb
 .DS_Store
 coverage
 logs
-*.log
-docs/*
+*.log.env

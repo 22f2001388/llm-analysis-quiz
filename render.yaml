@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: llm-analysis-quiz
+    env: node
+    plan: free
+    buildCommand: "bun install && bun run build"
+    startCommand: "bun run start"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: EMAIL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: HEADLESS
+        value: true
+      - key: LIGHTWEIGHT_BROWSER
+        value: true

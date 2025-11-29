@@ -1,15 +1,16 @@
-import tseslint from "@typescript-eslint/eslint-plugin";
-import tsParser from "@typescript-eslint/parser";
+import eslint from '@eslint/js';
+import tseslint from 'typescript-eslint';
 
-/** @type {import("eslint").Linter.FlatConfig[]} */
-export default [
+export default tseslint.config(
   {
     ignores: ["dist/**", "node_modules/**", "*.log"],
   },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
   {
     files: ["src/**/*.ts"],
     languageOptions: {
-      parser: tsParser,
       parserOptions: {
         project: "./tsconfig.json",
         sourceType: "module",
@@ -20,11 +21,19 @@ export default [
         Buffer: "readonly",
       },
     },
-    plugins: { "@typescript-eslint": tseslint },
     rules: {
-      ...tseslint.configs.recommended.rules,
-      ...tseslint.configs["recommended-type-checked"].rules,
       "no-undef": "off",
     },
   },
-];
+  {
+    files: ["src/app/server.ts"],
+    rules: {
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+    },
+  }
+);

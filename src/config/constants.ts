@@ -5,6 +5,16 @@ export const HTTP = {
 
 export const BROWSER = {
   navTimeoutMs: 10000,
-  selectorTimeoutMs: 8000,
+  selectorTimeoutMs: 30000,
   waitUntil: "networkidle2" as const
+};
+
+export const DATA = {
+  downloadTimeoutMs: 8000,
+  sizeLimitBytes: 1_000_000
+};
+
+export const GOVERNOR = {
+  totalMs: 180_000,
+  minStartMs: 5_000
 };

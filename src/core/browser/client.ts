@@ -1,70 +1,144 @@
-import puppeteer, { Browser, Page, Viewport } from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
-import { env } from "../../config/env.js";
-import { BROWSER } from "../../config/constants.js";
+import puppeteer, { Browser, Page } from "puppeteer";
+import { env } from "@/config/env.js";
+import { BROWSER } from "@/config/constants.js";
 
-let browser: Browser | null = null;
-let page: Page | null = null;
+class BrowserManager {
+  private _browser: Browser | null = null;
+  private _page: Page | null = null;
+  private isClosing = false;
 
-function isStringArray(x: unknown): x is string[] {
-  return Array.isArray(x) && x.every((s) => typeof s === "string");
-}
+  async open(): Promise<void> {
+    if (this._browser || this.isClosing) return;
 
-function isViewport(x: unknown): x is Viewport {
-  return typeof x === "object" && x !== null && "width" in (x as Record<string, unknown>) && "height" in (x as Record<string, unknown>);
-}
+    const headless: boolean | "shell" = env.HEADLESS ? true : false;
 
-async function resolveExecutablePath(): Promise<string> {
-  if (env.BROWSER_PATH) return env.BROWSER_PATH;
-  const p = await chromium.executablePath();
-  return typeof p === "string" ? p : String(p);
-}
+    const baseArgs: string[] = [
+      "--disable-dev-shm-usage",
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+      "--disable-gpu"
+    ];
 
-export async function open(): Promise<void> {
-  if (browser) return;
+    const lightweightArgs: string[] = [
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-features=TranslateUI",
+      "--disable-extensions",
+      "--disable-plugins",
+      "--disable-images",
+      "--disable-javascript-harmony-shipping",
+      "--disable-default-apps",
+      "--mute-audio",
+      "--no-default-browser-check",
+      "--disable-hang-monitor",
+      "--disable-prompt-on-repost",
+      "--disable-sync",
+      "--disable-web-security",
+      "--disable-ipc-flooding-protection",
+      "--disable-logging",
+      "--disable-permissions-api",
+      "--disable-notifications",
+      "--disable-popup-blocking",
+      "--disable-prompt-on-repost",
+      "--disable-component-extensions-with-background-pages",
+      "--disable-background-networking",
+      "--disable-client-side-phishing-detection",
+      "--disable-component-update",
+      "--disable-domain-reliability",
+      "--disable-features=AudioServiceOutOfProcess",
+      "--disable-features=VizDisplayCompositor"
+    ];
 
-  const executablePath = await resolveExecutablePath();
-  const headless: boolean | "shell" = env.HEADLESS ? true : false;
+    const args = env.LIGHTWEIGHT_BROWSER ? [...baseArgs, ...lightweightArgs] : baseArgs;
 
-  const baseArgsUnknown: unknown = (chromium as unknown as { args?: unknown }).args;
-  const chromiumArgs: string[] = isStringArray(baseArgsUnknown) ? baseArgsUnknown : [];
-  const args: string[] = [...chromiumArgs, "--disable-dev-shm-usage", "--no-sandbox"];
+    try {
+      this._browser = await puppeteer.launch({
+        headless,
+        args
+      });
 
-  const vpUnknown: unknown = (chromium as unknown as { defaultViewport?: unknown }).defaultViewport;
-  const defaultViewport: Viewport | undefined = isViewport(vpUnknown) ? vpUnknown : undefined;
-
-  browser = await puppeteer.launch({
-    executablePath,
-    headless,
-    args,
-    defaultViewport
-  });
-
-  page = await browser.newPage();
-  await page.setUserAgent("llm-quiz-bot/1.0");
-}
-
-export async function goto(url: string, timeoutMs = BROWSER.navTimeoutMs): Promise<void> {
-  if (!browser || !page) await open();
-  if (!page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
-  await page.goto(url, { waitUntil: BROWSER.waitUntil, timeout: timeoutMs });
-}
-
-export function getPage(): Page {
-  if (!page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
-  return page;
-}
-
-export async function close(): Promise<void> {
-  try {
-    if (page) {
-      await page.close({ runBeforeUnload: false });
-      page = null;
-    }
-  } finally {
-    if (browser) {
-      await browser.close();
-      browser = null;
+      this._page = await this._browser.newPage();
+      
+      // Optimize page for performance
+      await this._page.setUserAgent("llm-quiz-bot/1.0");
+      
+      if (env.LIGHTWEIGHT_BROWSER) {
+        await this._page.setRequestInterception(true);
+        this._page.on('request', (req) => {
+          const resourceType = req.resourceType();
+          // Block unnecessary resources for faster loading
+                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                  void req.abort();
+                } else {
+                  void req.continue();          }
+        });
+        
+        // Set viewport to minimal size
+        await this._page.setViewport({ width: 800, height: 600 });
+      }
+    } catch (error) {
+      await this.cleanup();
+      throw error;
     }
   }
+
+  async goto(url: string, timeoutMs = BROWSER.navTimeoutMs): Promise<void> {
+    if (!this._browser || !this._page) await this.open();
+    if (!this._page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
+    await this._page.goto(url, { waitUntil: BROWSER.waitUntil, timeout: timeoutMs });
+  }
+
+  getPage(): Page {
+    if (!this._page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
+    return this._page;
+  }
+
+  private async cleanup(): Promise<void> {
+    if (this.isClosing) return;
+    this.isClosing = true;
+
+    try {
+      if (this._page) {
+        await this._page.close({ runBeforeUnload: false }).catch(() => {});
+        this._page = null;
+      }
+    } finally {
+      if (this._browser) {
+        await this._browser.close().catch(() => {});
+        this._browser = null;
+      }
+      this.isClosing = false;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.cleanup();
+  }
+
+  async forceClose(): Promise<void> {
+    this.isClosing = true;
+    await this.cleanup();
+  }
+
+  // Legacy compatibility
+  get browser() { return this._browser; }
+  get page() { return this._page; }
 }
+
+export const browserManager = new BrowserManager();
+
+// Legacy exports for backward compatibility
+export const browserState = {
+  get browser() { return browserManager.browser; },
+  get page() { return browserManager.page; }
+};
+
+export const open = () => browserManager.open();
+export const goto = (url: string, timeoutMs?: number) => browserManager.goto(url, timeoutMs);
+export const getPage = () => browserManager.getPage();
+export const close = () => browserManager.close();
