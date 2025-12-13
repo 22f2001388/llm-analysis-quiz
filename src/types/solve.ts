@@ -1,18 +1,14 @@
-import type { Table } from "@/types/data.js";
 
-export type OpKind = "sum" | "avg" | "min" | "max" | "count" | "select" | "filter-eq";
+
+export type OpKind = "direct-answer";
 
 export type OperationPlan = {
   op: OpKind;
-  column?: string;
-  where?: { column: string; eq: string | number | boolean };
-  select?: string[];
+  answer?: string | number | boolean | unknown;
 };
 
-export type SolveInput = {
-  taskText: string;
-  table?: Table | null;
-};
+
+
 
 export type SolveResult =
   | { kind: "number"; value: number }

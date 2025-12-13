@@ -6,3 +6,4 @@ bun.lockb
 coverage
 logs
 *.log.env
+*.md

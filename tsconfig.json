@@ -1,23 +1,38 @@
 {
   "compilerOptions": {
     "target": "esnext",
-    "lib": ["esnext", "DOM", "DOM.Iterable"],
+    "lib": [
+      "esnext",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["vitest/globals", "node"],
+    "types": [
+      "vitest/globals",
+      "node",
+      "bun"
+    ],
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": [
+        "src/*"
+      ]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "api"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "api"
+  ]
 }

@@ -1,14 +1,22 @@
-import puppeteer, { Browser, Page } from "puppeteer";
+import puppeteer, { Browser, Page, HTTPRequest } from "puppeteer";
 import { env } from "@/config/env.js";
 import { BROWSER } from "@/config/constants.js";
+import { logger } from "@/adapters/telemetry/logger.js";
+
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 class BrowserManager {
   private _browser: Browser | null = null;
-  private _page: Page | null = null;
+  private _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _activePages = 0;
   private isClosing = false;
 
-  async open(): Promise<void> {
-    if (this._browser || this.isClosing) return;
+  private async getBrowser(): Promise<Browser> {
+    if (this._browser && this._browser.isConnected()) {
+      return this._browser;
+    }
+
+    this.clearIdleTimer();
 
     const headless: boolean | "shell" = env.HEADLESS ? true : false;
 
@@ -20,7 +28,9 @@ class BrowserManager {
       "--no-first-run",
       "--no-zygote",
       "--single-process",
-      "--disable-gpu"
+      "--disable-gpu",
+      // Stealth args
+      "--disable-blink-features=AutomationControlled",
     ];
 
     const lightweightArgs: string[] = [
@@ -56,89 +66,142 @@ class BrowserManager {
 
     const args = env.LIGHTWEIGHT_BROWSER ? [...baseArgs, ...lightweightArgs] : baseArgs;
 
+    logger.debug({ event: 'browser:launch:start' }, 'Launching new browser instance');
+
+    logger.info({
+      event: 'browser:config',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 'bundled',
+      cwd: process.cwd(),
+      files: import.meta.dir
+    }, 'Browser Launch Configuration');
+
+    // Explicitly cast to avoid type issues if inference fails
+    const browser = await puppeteer.launch({
+      headless,
+      args,
+      ignoreDefaultArgs: ["--enable-automation"],
+    });
+    this._browser = browser as unknown as Browser;
+
+    this._browser.on('disconnected', () => {
+      logger.warn({ event: 'browser:disconnected' }, 'Browser disconnected unexpectedly');
+      this._browser = null;
+    });
+
+    return this._browser;
+  }
+
+  async getPage(): Promise<Page> {
+    this.clearIdleTimer();
+    this._activePages++;
+
     try {
-      this._browser = await puppeteer.launch({
-        headless,
-        args
+      const browser = await this.getBrowser();
+      const page = await browser.newPage();
+
+      // Stealth transformations
+      await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+      await page.evaluateOnNewDocument(() => {
+        // Mask webdriver property
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => false,
+        });
+
+        // Mock plugins/languages if needed, but webdriver is the main signal
       });
 
-      this._page = await this._browser.newPage();
-      
-      // Optimize page for performance
-      await this._page.setUserAgent("llm-quiz-bot/1.0");
-      
       if (env.LIGHTWEIGHT_BROWSER) {
-        await this._page.setRequestInterception(true);
-        this._page.on('request', (req) => {
+        await page.setRequestInterception(true);
+        page.on('request', (req: HTTPRequest) => {
+          if (req.isInterceptResolutionHandled()) return;
+
           const resourceType = req.resourceType();
-          // Block unnecessary resources for faster loading
-                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                  void req.abort();
-                } else {
-                  void req.continue();          }
+          if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+            void req.abort();
+          } else {
+            void req.continue();
+          }
         });
-        
-        // Set viewport to minimal size
-        await this._page.setViewport({ width: 800, height: 600 });
+
+        await page.setViewport({ width: 1280, height: 800 }); // More realistic viewport
       }
+
+      return page;
     } catch (error) {
-      await this.cleanup();
+      this._activePages--;
+      this.checkIdle();
       throw error;
     }
   }
 
-  async goto(url: string, timeoutMs = BROWSER.navTimeoutMs): Promise<void> {
-    if (!this._browser || !this._page) await this.open();
-    if (!this._page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
-    await this._page.goto(url, { waitUntil: BROWSER.waitUntil, timeout: timeoutMs });
-  }
-
-  getPage(): Page {
-    if (!this._page) throw new Error("BROWSER_PAGE_UNAVAILABLE");
-    return this._page;
-  }
-
-  private async cleanup(): Promise<void> {
-    if (this.isClosing) return;
-    this.isClosing = true;
-
+  async releasePage(page: Page): Promise<void> {
     try {
-      if (this._page) {
-        await this._page.close({ runBeforeUnload: false }).catch(() => {});
-        this._page = null;
+      if (page && !page.isClosed()) {
+        await page.close({ runBeforeUnload: false }).catch(() => { });
       }
     } finally {
+      this._activePages--;
+      this.checkIdle();
+    }
+  }
+
+  private clearIdleTimer() {
+    if (this._idleTimer) {
+      clearTimeout(this._idleTimer);
+      this._idleTimer = null;
+    }
+  }
+
+  private checkIdle() {
+    if (this._activePages <= 0 && !this.isClosing) {
+      this._activePages = 0;
+      if (this._idleTimer) clearTimeout(this._idleTimer);
+
+      logger.debug({ event: 'browser:idle_timer_start', timeoutMs: IDLE_TIMEOUT_MS }, 'Browser idle timer started');
+      this._idleTimer = setTimeout(() => {
+        void this.shutdown();
+      }, IDLE_TIMEOUT_MS);
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.isClosing || !this._browser) return;
+    this.isClosing = true;
+    this.clearIdleTimer();
+
+    logger.info({ event: 'browser:shutdown' }, 'Shutting down browser instance');
+    try {
       if (this._browser) {
-        await this._browser.close().catch(() => {});
+        await this._browser.close().catch(() => { });
         this._browser = null;
       }
+    } finally {
       this.isClosing = false;
     }
   }
 
+  // Legacy/Compatibility methods
+  async open(): Promise<void> {
+    await this.getBrowser();
+  }
+
   async close(): Promise<void> {
-    await this.cleanup();
   }
 
-  async forceClose(): Promise<void> {
-    this.isClosing = true;
-    await this.cleanup();
-  }
-
-  // Legacy compatibility
-  get browser() { return this._browser; }
-  get page() { return this._page; }
+  get page() { return null; }
 }
 
 export const browserManager = new BrowserManager();
 
-// Legacy exports for backward compatibility
-export const browserState = {
-  get browser() { return browserManager.browser; },
-  get page() { return browserManager.page; }
-};
+export const getPage = () => browserManager.getPage();
+export const releasePage = (p: Page) => browserManager.releasePage(p);
+export const shutdown = () => browserManager.shutdown();
 
 export const open = () => browserManager.open();
-export const goto = (url: string, timeoutMs?: number) => browserManager.goto(url, timeoutMs);
-export const getPage = () => browserManager.getPage();
-export const close = () => browserManager.close();
+export const close = () => { };
+export const goto = (_url: string, _timeoutMs = BROWSER.navTimeoutMs): Promise<void> => {
+  void _url;
+  void _timeoutMs;
+  return Promise.reject(new Error("Use page.goto instead of global goto"));
+};

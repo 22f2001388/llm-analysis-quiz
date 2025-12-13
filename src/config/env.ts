@@ -20,9 +20,26 @@ export const env = {
   SECRET_KEY: process.env.SECRET_KEY as string,
   EMAIL: process.env.EMAIL as string,
   LLM_API_KEY: process.env.LLM_API_KEY as string,
+  LLM_API_KEYS: (process.env.LLM_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean),
+  LLM_MODEL: (process.env.LLM_MODEL || "gemma-3-27b-it-it") as string,
   HEADLESS: (process.env.HEADLESS || "true").toLowerCase() !== "false",
   LIGHTWEIGHT_BROWSER: (process.env.LIGHTWEIGHT_BROWSER || "true").toLowerCase() !== "false"
 };
+
+const SUPPORTED_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+  "gemma-3-1b",
+  "gemma-3-2b",
+  "gemma-3-4b",
+  "gemma-3-12b",
+  "gemma-3-27b-it"
+];
+
+if (!SUPPORTED_MODELS.includes(env.LLM_MODEL)) {
+  console.warn(`Warning: LLM_MODEL "${env.LLM_MODEL}" is not in the supported list: ${SUPPORTED_MODELS.join(", ")}`);
+}
 
 export function safeEqualsSecret(input: string): boolean {
   const probe = Buffer.from(input);
@@ -46,15 +63,15 @@ export function safeEqualsEmail(input: string): boolean {
   if (typeof input !== 'string' || typeof email !== 'string') {
     return false;
   }
-  
+
   const inputLower = input.toLowerCase();
   const emailLower = email.toLowerCase();
-  
+
   // Use timing-safe comparison for emails
   if (inputLower.length !== emailLower.length) {
     return false;
   }
-  
+
   try {
     return timingSafeEqual(Buffer.from(inputLower), Buffer.from(emailLower));
   } catch {

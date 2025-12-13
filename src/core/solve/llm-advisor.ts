@@ -1,89 +1,116 @@
 import { callGemini } from "@/adapters/llm/gemini.js";
-import type { Table } from "@/types/data.js";
-import type { OperationPlan } from "@/types/solve.js";
+import { logger } from "@/adapters/telemetry/logger.js";
+import type { StructuredResource } from "@/core/data/data-converter.js";
+import type { SolutionPlan } from "@/core/solve/planner.js";
+import type { OperationPlan, SolveResult } from "@/types/solve.js";
 
-export function buildPrompt(taskText: string, table: Table | null): string {
-  let prompt = `Task: "${taskText}"\n\n`;
-  if (table) {
-    prompt += `Data table headers: ${table.headers.join(', ')}\n`;
-    prompt += `Sample rows: ${table.rows.slice(0, 3).map(row => row.join(', ')).join('; ')}\n`;
-    prompt += `Total rows: ${table.rows.length}\n\n`;
+const MODEL_CASCADE = {
+  simple: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
+  medium: ['gemini-2.5-flash', 'gemma-3-27b-it', 'gemini-2.5-pro'],
+  hard: ['gemini-2.5-pro']
+};
+
+function buildSolvePrompt(taskText: string, plan: SolutionPlan, resources: StructuredResource[]): string {
+  let prompt = `Solve this quiz task.
+
+Task: "${taskText}"
+
+Strategy: ${plan.strategy}
+Steps: ${plan.steps.join(' → ')}
+
+`;
+
+  for (const resource of resources) {
+    prompt += `Resource: ${resource.name}\n`;
+    prompt += `Headers: ${resource.headers.join(', ')}\n`;
+
+    if (resource.rows.length > 0) {
+      if (resource.rows.length <= 100) {
+        prompt += `Data: ${JSON.stringify(resource.rows)}\n\n`;
+      } else {
+        prompt += `Sample (first 5): ${JSON.stringify(resource.rows.slice(0, 5))}\n`;
+        prompt += `Total rows: ${resource.rowCount}\n\n`;
+      }
+    } else if (resource.rawContent) {
+      prompt += `Raw content:\n${resource.rawContent}\n\n`;
+    }
   }
-  prompt += `Identify the required operation. Possible ops: sum, avg, min, max, count, filter-eq.\n`;
-  prompt += `For sum/avg/min/max/count: specify column name.\n`;
-  prompt += `For filter-eq: specify column and eq value.\n`;
-  prompt += `Respond with JSON only: {"op": "...", "column": "...", "where": {"column": "...", "eq": "..."}}\n`;
-  prompt += `If unclear, respond with null.`;
+
+  prompt += `Instructions:
+1. If this is an ENTRY/LANDING page (mentions "Start by POSTing", "begin", etc.), answer: true
+2. Otherwise, analyze the data and compute the answer following the strategy.
+3. For data normalization tasks, return the JSON array as a STRING (escaped JSON).
+4. Return ONLY: {"op": "direct-answer", "answer": YOUR_COMPUTED_ANSWER}
+
+Respond with JSON only.`;
   return prompt;
 }
 
-export function parseResponse(response: string | null): OperationPlan | null {
+function parseResponse(response: string | null): OperationPlan | null {
   if (!response || typeof response !== 'string') return null;
-  
+
   try {
-    // Find JSON object boundaries more safely
     const jsonStart = response.indexOf('{');
     const jsonEnd = response.lastIndexOf('}');
-    
-    if (jsonStart === -1 || jsonEnd === -1 || jsonStart >= jsonEnd) {
-      return null;
-    }
-    
+    if (jsonStart === -1 || jsonEnd === -1 || jsonStart >= jsonEnd) return null;
+
     const jsonStr = response.substring(jsonStart, jsonEnd + 1);
     const parsed = JSON.parse(jsonStr) as unknown;
-    
-    // Validate the structure more thoroughly
-    if (
-      typeof parsed === 'object' && 
-      parsed !== null && 
-      'op' in parsed &&
-      typeof parsed.op === 'string' &&
-      ['sum', 'avg', 'min', 'max', 'count', 'filter-eq'].includes(parsed.op)
-    ) {
+
+    if (typeof parsed === 'object' && parsed !== null && 'op' in parsed) {
       const plan = parsed as Record<string, unknown>;
-      
-      // Validate required fields based on operation type
-      if (plan.op === 'count') {
-        return { op: 'count' };
-      }
-      
-      if (plan.op === 'filter-eq') {
-        if (
-          'column' in plan && 
-          typeof plan.column === 'string' &&
-          'where' in plan &&
-          typeof plan.where === 'object' &&
-          plan.where !== null &&
-          'column' in plan.where &&
-          'eq' in plan.where
-        ) {
-          const where = plan.where as Record<string, unknown>;
-          if (typeof where.column === 'string') {
-            return {
-              op: 'filter-eq',
-              column: plan.column,
-              where: { column: where.column, eq: where.eq as string | number | boolean }
-            };
-          }
-        }
-      } else if ('column' in plan && typeof plan.column === 'string') {
-        return {
-          op: plan.op as 'sum' | 'avg' | 'min' | 'max',
-          column: plan.column
-        };
+      if (plan.op === 'direct-answer' && 'answer' in plan) {
+        return { op: 'direct-answer', answer: plan.answer };
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (_error) {
-    // Log parsing errors for debugging but don't expose them
-    // Could add logging here if needed
+  } catch (error) {
+    logger.error({ event: 'solve:parse_error', error }, 'Failed to parse solve response');
   }
-  
+
   return null;
 }
 
-export async function adviseOperation(taskText: string, table: Table | null): Promise<OperationPlan | null> {
-  const prompt = buildPrompt(taskText, table);
-  const response = await callGemini(prompt, 5000);
-  return parseResponse(response);
+export async function solveProblem(
+  taskText: string,
+  plan: SolutionPlan,
+  resources: StructuredResource[]
+): Promise<SolveResult | null> {
+  const prompt = buildSolvePrompt(taskText, plan, resources);
+  const models = MODEL_CASCADE[plan.complexity] || MODEL_CASCADE.medium;
+
+  for (const model of models) {
+    logger.debug({ event: 'solve:trying', model, complexity: plan.complexity }, 'Trying model');
+
+    try {
+      const response = await callGemini(prompt, { timeoutMs: 20000, model });
+      const result = parseResponse(response);
+
+      if (result && result.answer !== undefined) {
+        logger.info({ event: 'solve:success', model }, 'Solved with model');
+        return toSolveResult(result.answer);
+      }
+    } catch (error) {
+      logger.warn({ event: 'solve:model_failed', model, error }, 'Model failed, trying next');
+    }
+  }
+
+  logger.error({ event: 'solve:all_failed' }, 'All models failed');
+  return null;
+}
+
+function toSolveResult(answer: unknown): SolveResult {
+  if (typeof answer === 'number') return { kind: 'number', value: answer };
+  if (typeof answer === 'string') return { kind: 'string', value: answer };
+  if (typeof answer === 'boolean') return { kind: 'boolean', value: answer };
+  return { kind: 'object', value: answer };
+}
+
+export async function adviseOperation(taskText: string, resources: StructuredResource[]): Promise<SolveResult | null> {
+  const defaultPlan: SolutionPlan = {
+    complexity: 'simple',
+    strategy: 'Analyze and answer directly',
+    steps: ['Analyze', 'Answer'],
+    requiredResources: resources.map(r => r.name)
+  };
+  return solveProblem(taskText, defaultPlan, resources);
 }

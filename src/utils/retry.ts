@@ -1,4 +1,4 @@
-import { logger } from './logger.js';
+import { logger } from '@/adapters/telemetry/logger.js';
 
 export async function retry<T>(
   fn: () => Promise<T>,

@@ -1,7 +1,7 @@
 import pino, { LoggerOptions, LogFn } from "pino";
 
 export const loggerOptions: LoggerOptions = {
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === "production" ? "info" : "debug"),
+  level: process.env.LOG_LEVEL || "debug",
   base: null,
   timestamp: () => {
     const now = new Date();
@@ -49,7 +49,7 @@ export const loggerOptions: LoggerOptions = {
   }
 };
 
-const transport = process.env.NODE_ENV !== 'production' ? {
+const transport = {
   target: 'pino-pretty',
   options: {
     colorize: false,
@@ -57,7 +57,7 @@ const transport = process.env.NODE_ENV !== 'production' ? {
     ignore: 'pid,hostname',
     singleLine: false
   }
-} : undefined;
+};
 
 export const logger = pino({
   ...loggerOptions,

@@ -24,6 +24,65 @@ check_required_vars() {
   fi
 }
 
+
+cleanup_pids() {
+  for pid in "${PIDS_TO_KILL[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Killing process $pid"
+      kill "$pid" || true
+    fi
+  done
+}
+
+PIDS_TO_KILL=()
+trap cleanup_pids EXIT
+
+wait_for_url() {
+  local url="$1"
+  local max_retries="${2:-30}"
+  local delay="${3:-1}"
+  
+  printf "Waiting for %s " "$url"
+  for ((i=0; i<max_retries; i++)); do
+    if curl -s -o /dev/null -f "$url"; then
+      echo " OK"
+      return 0
+    fi
+    printf "."
+    sleep "$delay"
+  done
+  echo " Timeout"
+  return 1
+  echo " Timeout"
+  return 1
+}
+
+force_kill_port() {
+  local port="$1"
+  local pid=$(lsof -t -i:"$port" || true)
+  if [[ -n "$pid" ]]; then
+    echo "Force killing process on port $port (PID: $pid)"
+    kill -9 "$pid" || true
+  fi
+}
+
+start_server() {
+  if curl -s -o /dev/null -f "http://localhost:3000/health"; then
+    echo "Server already running on port 3000"
+    return 0
+  fi
+
+  echo "Starting main server..."
+  bun run dev > /dev/null 2>&1 &
+  SERVER_PID=$!
+  PIDS_TO_KILL+=("$SERVER_PID")
+  
+  if ! wait_for_url "http://localhost:3000/health"; then
+    echo "ERROR: Server failed to start"
+    return 1
+  fi
+}
+
 test_endpoint() {
   load_env
   local endpoint_url="${1:-http://localhost:3000/solve}"
@@ -124,7 +183,7 @@ test_browser() {
 
   echo
 
-  bun "$SCRIPT_DIR/test-browser.ts" "$url"
+  bun "$SCRIPT_DIR/test-browser.ts" --url="$url"
   
   echo
   echo "Browser test completed"
@@ -137,7 +196,9 @@ test_integration() {
   echo "Using EMAIL: $EMAIL"
   echo "Using SECRET_KEY: [REDACTED]"
   echo "Starting quiz page server..."
-  bun "$SCRIPT_DIR/mock-servers.ts" page 3001 &
+  echo "Starting quiz page server..."
+  force_kill_port 3001
+  bun "$SCRIPT_DIR/mock-servers.ts" --type=page --port=3001 &
   QUIZ_SERVER_PID=$!
 
   sleep 3
@@ -171,7 +232,9 @@ test_local() {
   fi
 
   echo "Starting mock server..."
-  bun "$SCRIPT_DIR/mock-servers.ts" quiz 4545 &
+  echo "Starting mock server..."
+  force_kill_port 4545
+  bun "$SCRIPT_DIR/mock-servers.ts" --type=quiz --port=4545 &
   SERVER_PID=$!
   sleep 5
 
@@ -185,59 +248,49 @@ test_local() {
   echo "Local test complete."
 }
 
-show_help() {
-  cat << 'EOF'
-Unified Test CLI for LLM Analysis Quiz
+test_all() {
+  load_env
+  check_required_vars
+  
+  echo "=== 1. Starting Application Server ==="
+  start_server
+  echo
 
-Usage: ./test.sh <command> [options]
+  echo "=== 2. Running API Endpoint Tests ==="
+  test_endpoint "http://localhost:3000/solve" "${EMAIL:-}" "${SECRET_KEY:-}"
+  echo
 
-Commands:
-  endpoint [url] [email] [secret]  Test API endpoint with various scenarios
-  browser [url]                   Test browser functionality
-  integration                      Full integration test with quiz server
-  local                           Quick local test with mock server
-  help                            Show this help message
+  echo "=== 3. Running Browser Automation Test (Local) ==="
+  # Start a temporary page server for the browser test
+  echo "=== 3. Running Browser Automation Test (Local) ==="
+  # Start a temporary page server for the browser test
+  force_kill_port 3002
+  bun "$SCRIPT_DIR/mock-servers.ts" --type=page --port=3002 > /dev/null 2>&1 &
+  MOCK_PAGE_PID=$!
+  PIDS_TO_KILL+=("$MOCK_PAGE_PID")
+  
+  wait_for_url "http://localhost:3002/" 10 0.5
+  
+  test_browser "http://localhost:3002/"
+  
+  # Kill it explicitly now (or let trap handle it, but better cleanly here)
+  kill "$MOCK_PAGE_PID" || true
+  # Remove from PIDS_TO_KILL roughly (optional, but good practice)
+  echo
 
-Examples:
-  ./test.sh endpoint                     Test with default values
-  ./test.sh endpoint http://localhost:3000/solve test@example.com mysecret
-  ./test.sh browser https://example.com
-  ./test.sh integration
-  ./test.sh local
+  echo "=== 4. Running Integration Test (Page Flow) ==="
+  test_integration
+  echo
 
-Environment Variables (from .env):
-  EMAIL           Required for integration/local tests
-  SECRET_KEY      Required for all tests
-  LLM_API_KEY    Optional for LLM features
-
-EOF
+  echo "=== 5. Running Local Test (Quiz Flow) ==="
+  test_local
+  echo
+  
+  echo "✅ All tests passed successfully!"
 }
 
 main() {
-  local command="${1:-help}"
-  
-  case "$command" in
-    endpoint)
-      test_endpoint "${2:-}" "${3:-}" "${4:-}"
-      ;;
-    browser)
-      test_browser "${2:-}"
-      ;;
-    integration)
-      test_integration
-      ;;
-    local)
-      test_local
-      ;;
-    help|--help|-h)
-      show_help
-      ;;
-    *)
-      echo "Error: Unknown command '$command'"
-      echo "Run '$0 help' for usage information"
-      exit 1
-      ;;
-  esac
+  test_all
 }
 
 main "$@"

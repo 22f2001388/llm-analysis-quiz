@@ -1,7 +1,7 @@
-#!/usr/bin/env bun
 
-import { open, goto, close } from "../src/core/browser/client.js";
+import { getPage, releasePage, shutdown } from "../src/core/browser/client.js";
 import { parseArgs } from "util";
+import type { Page } from "puppeteer";
 
 import "../src/config/env.js";
 
@@ -36,12 +36,13 @@ try {
 
 async function testSimple(url: string, waitTime: number) {
   console.log(`Opening browser with URL: ${url}`);
+  let page: Page | null = null;
 
   try {
-    await open();
-    console.log('Browser launched successfully');
+    page = await getPage();
+    console.log('Browser page acquired successfully');
 
-    await goto(url);
+    await page.goto(url);
     console.log(`Navigated to ${url}`);
 
     if (waitTime > 0) {
@@ -54,23 +55,25 @@ async function testSimple(url: string, waitTime: number) {
     console.error('Browser test failed:');
     console.error('Error:', error instanceof Error ? error.message : String(error));
     throw error;
+  } finally {
+    if (page) await releasePage(page);
   }
 }
 
 async function testIntegration(url: string) {
   console.log(`Running integration test with URL: ${url}`);
+  let page: Page | null = null;
 
   try {
-    await open();
-    console.log('Browser launched for integration test');
-
-    await goto(url);
-    console.log(`Navigated to ${url}`);
+    page = await getPage();
+    console.log('Browser page acquired');
 
     console.log('Testing page extraction...');
-    const { extractFromUrl } = await import("../src/core/browser/page-extractor.js");
-    const result = await extractFromUrl(url);
-    
+    const { extractFromPage } = await import("../src/core/browser/page-extractor.js");
+
+    // extractFromPage handles navigation
+    const result = await extractFromPage(page, url);
+
     console.log('Extraction successful:');
     console.log(`- Text length: ${result.text.length} characters`);
     console.log(`- Selector wait time: ${result.meta.selectorWaitMs}ms`);
@@ -80,23 +83,24 @@ async function testIntegration(url: string) {
     console.error('Integration test failed:');
     console.error('Error:', error instanceof Error ? error.message : String(error));
     throw error;
+  } finally {
+    if (page) await releasePage(page);
   }
 }
 
 async function testDebug(url: string) {
   console.log(`Running debug test with URL: ${url}`);
+  let page: Page | null = null;
 
   try {
-    await open();
-    console.log('Browser launched in debug mode');
-
-    await goto(url);
-    console.log(`Navigated to ${url}`);
+    page = await getPage();
+    console.log('Browser page acquired in debug mode');
 
     console.log('Debug: Testing page extraction...');
-    const { extractFromUrl } = await import("../src/core/browser/page-extractor.js");
-    const result = await extractFromUrl(url);
-    
+    const { extractFromPage } = await import("../src/core/browser/page-extractor.js");
+
+    const result = await extractFromPage(page, url);
+
     console.log('=== DEBUG INFO ===');
     console.log(`URL: ${url}`);
     console.log(`Text length: ${result.text.length}`);
@@ -117,6 +121,8 @@ async function testDebug(url: string) {
       console.error('Stack trace:', error.stack);
     }
     throw error;
+  } finally {
+    if (page) await releasePage(page);
   }
 }
 
@@ -145,8 +151,8 @@ async function main() {
     process.exit(1);
   } finally {
     try {
-      await close();
-      console.log('Browser closed successfully');
+      await shutdown();
+      console.log('Browser shutdown successfully');
     } catch (cleanupError) {
       console.error('Error during cleanup:', cleanupError instanceof Error ? cleanupError.message : String(cleanupError));
     }
